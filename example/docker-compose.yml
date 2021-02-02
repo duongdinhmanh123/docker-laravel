@@ -1,0 +1,113 @@
+version: '3.5'
+
+# =========================================
+# X-Templates
+# =========================================
+x-app-service: &app-service
+  image: oanhnn/laravel:latest
+  depends_on:
+    - mysql
+    - redis
+  environment:
+    REDIS_HOST:  redis
+    DB_HOST:     mysql
+    LOG_CHANNEL: stderr
+    QUEUE_CONNECTION: redis
+    CACHE_DRIVER:     redis
+  restart: unless-stopped
+  volumes:
+    # Mount project's root directory to /var/www
+    - .:/var/www
+    # Enable XDebug
+    - .docker/php/xdebug.ini:/usr/local/etc/php/conf.d/xdebug.ini:ro
+  working_dir: /var/www
+
+# =========================================
+# Networks
+# =========================================
+networks:
+  mysql-net: {}
+  redis-net: {}
+  proxy-net: {}
+
+# =========================================
+# Volumes
+# =========================================
+volumes:
+  mysql-vol: {}
+  redis-vol: {}
+
+# =========================================
+# Services
+# =========================================
+services:
+
+  # The Redis service with password supported
+  # @see https://hub.docker.com/_/redis
+  redis:
+    image: redis:alpine
+    networks:
+      - redis-net
+    restart: unless-stopped
+    volumes:
+      - redis-vol:/data
+
+  # The MySQL 8.0 service with native password supported
+  # @see https://hub.docker.com/_/mysql
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
+      MYSQL_USER:          ${DB_USERNAME}
+      MYSQL_PASSWORD:      ${DB_PASSWORD}
+      MYSQL_DATABASE:      ${DB_DATABASE}
+    networks:
+      - mysql-net
+    restart: unless-stopped
+    volumes:
+      - mysql-vol:/var/lib/mysql
+      # Mount init database script if need
+      # - .docker/mysql:/docker-entrypoint-initdb.d:ro
+
+  # The NGINX service with upstream to PHP FastCGI
+  # @see https://hub.docker.com/_/nginx
+  nginx:
+    image: nginx:stable-alpine
+    depends_on:
+      - php
+    networks:
+      - proxy-net
+    ports:
+      - 80:80
+    volumes:
+      - ./:/var/www:ro
+      - .docker/nginx/default.conf:/etc/nginx/templates/default.conf.template:ro
+
+  # The PHP-FPM service
+  # It using default command in Dockerfile (from php:xx-fpm-alpine)
+  # @see https://hub.docker.com/_/php
+  php:
+    <<: *app-service
+    networks:
+      - mysql-net
+      - redis-net
+      - proxy-net
+
+  # This schedule service
+  # It execute command `php artisan schedule:run` in a infinite loop with option `--sleep`.
+  # Option `--sleep` with value 60 is sleep 60 seconds
+  schedule:
+    <<: *app-service
+    command: artisan schedule:run --verbose --no-interaction --sleep 60
+    networks:
+      - mysql-net
+      - redis-net
+
+  # This queue worker service
+  # It using `artisan queue:work` or `artisan horizon`
+  horizon:
+    <<: *app-service
+    command: artisan queue:work
+    networks:
+      - mysql-net
+      - redis-net
